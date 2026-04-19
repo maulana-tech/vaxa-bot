@@ -257,9 +257,22 @@ Object.entries(AGENTS).forEach(([command, agent]) => {
   });
 });
 
-bot.launch().then(() => {
-  console.log("🤖 Vaxa Bot started!");
-});
+import http from "http";
+
+const PORT = parseInt(process.env.PORT || "8080", 10);
+const WEBHOOK_PATH = "/webhook";
+const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
+
+if (WEBHOOK_DOMAIN) {
+  const url = WEBHOOK_DOMAIN.replace(/\/$/, "") + WEBHOOK_PATH;
+  bot.telegram.setWebhook(url);
+  bot.startWebhook(WEBHOOK_PATH, null, PORT);
+  console.log(`🤖 Bot started (webhook) port ${PORT}, url: ${url}`);
+} else {
+  const server = http.createServer((_, res) => { res.writeHead(200); res.end("ok"); });
+  server.listen(PORT, () => console.log(`Health check on port ${PORT}`));
+  bot.launch().then(() => console.log("🤖 Bot started (polling)"));
+}
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
