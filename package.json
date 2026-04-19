@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
+    "start": "npx tsx index.ts",
     "dev": "npx tsx watch index.ts"
   },
   "dependencies": {
     "telegraf": "^4.16.3",
-    "axios": "^1.7.9"
+    "axios": "^1.7.9",
+    "tsx": "^4.19.0"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
