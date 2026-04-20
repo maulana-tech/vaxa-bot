@@ -280,6 +280,68 @@ async function callGitHub(action: string, args: string[]): Promise<string> {
   }
 }
 
+async function fetchGitHubFile(repo: string, path: string): Promise<{ content: string; language: string } | null> {
+  if (!GITHUB_TOKEN) return null;
+  try {
+    const res = await axios.get(`https://api.github.com/repos/${repo}/contents/${path}`, {
+      headers: githubHeaders,
+      timeout: 10000,
+    });
+    const content = Buffer.from(res.data.content, "base64").toString("utf-8");
+    const ext = path.split(".").pop() || "txt";
+    const langMap: Record<string, string> = {
+      ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
+      py: "python", rs: "rust", go: "go", java: "java", sol: "solidity",
+      sql: "sql", sh: "bash", yml: "yaml", yaml: "yaml", json: "json",
+    };
+    return { content, language: langMap[ext] || ext };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchPRDiff(repo: string, prNumber: string): Promise<{ diff: string; title: string; files: string[] } | null> {
+  if (!GITHUB_TOKEN) return null;
+  try {
+    const prRes = await axios.get(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
+      headers: { ...githubHeaders, Accept: "application/vnd.github.v3.diff" },
+      timeout: 10000,
+    });
+    const diff = typeof prRes.data === "string" ? prRes.data : JSON.stringify(prRes.data);
+    const titleRes = await axios.get(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
+      headers: githubHeaders, timeout: 10000,
+    });
+    const files = (diff.match(/^--- a\/(.+)$/gm) || []).map((f: string) => f.replace("--- a/", ""));
+    return { diff: diff.slice(0, 8000), title: titleRes.data.title, files };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveInput(input: string): Promise<{ resolved: string; source: string; language?: string }> {
+  if (input.startsWith("repo ")) {
+    const parts = input.slice(5).trim().split(" ");
+    const repo = parts[0];
+    const path = parts.slice(1).join(" ");
+    if (!path) return { resolved: input, source: "raw", language: undefined };
+    const file = await fetchGitHubFile(repo, path);
+    if (!file) return { resolved: input, source: "github-failed", language: undefined };
+    return { resolved: file.content, source: `github:${repo}/${path}`, language: file.language };
+  }
+
+  if (input.startsWith("pr ")) {
+    const parts = input.slice(3).trim().split(" ");
+    const repo = parts[0];
+    const prNum = parts[1];
+    if (!repo || !prNum) return { resolved: input, source: "raw", language: undefined };
+    const pr = await fetchPRDiff(repo, prNum);
+    if (!pr) return { resolved: input, source: "github-failed", language: undefined };
+    return { resolved: `PR: ${pr.title}\n\n${pr.diff}`, source: `github:pr/${repo}#${prNum}`, language: "diff" };
+  }
+
+  return { resolved: input, source: "direct", language: undefined };
+}
+
 // ============== FORMAT RESULT ==============
 function formatResult(result: unknown, agentName: string, price: string): string {
   if (typeof result === "string") return result;
@@ -436,12 +498,12 @@ Object.entries(AGENTS).forEach(([command, agent]) => {
 
     if (!input) {
       const examples: Record<string, string> = {
-        code: "/code function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }",
+        code: "/code function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); }\n/code repo facebook/react packages/react/index.js\n/code pr facebook/react 12345",
         summarize: "/summarize The meeting discussed Q3 results with 15% growth...",
         translate: "/translate Hello world | id",
         sql: "/sql Get all users who signed up last month",
         regex: "/regex Match email addresses",
-        explain: "/explain const memo = (fn) => { const cache = {}; return (...args) => cache[args] || (cache[args] = fn(...args)); };",
+        explain: "/explain const memo = (fn) => { ... };\n/explain repo facebook/react packages/react/index.js",
       };
       ctx.reply(
         `${agent.name} - ${agent.price} USDC (bot pays!)\n\n` +
@@ -452,13 +514,80 @@ Object.entries(AGENTS).forEach(([command, agent]) => {
     }
 
     const spent = getSpentToday(userId);
+
+    let resolvedInput = input;
+    let resolvedLang: string | undefined;
+    if (input.startsWith("repo ") || input.startsWith("pr ")) {
+      ctx.reply(`Loading from GitHub...`);
+      const resolved = await resolveInput(input);
+      if (resolved.source === "github-failed") {
+        ctx.reply("Failed to fetch from GitHub. Check repo/path.");
+        return;
+      }
+      resolvedInput = resolved.resolved;
+      resolvedLang = resolved.language;
+      if (resolved.source !== "direct" && resolved.source !== "raw") {
+        ctx.reply(`Loaded from ${resolved.source}`);
+      }
+    }
+
     ctx.reply(`${agent.name} (${agent.price} USDC)...\nSpent today: ${spent.toFixed(2)} / ${DAILY_LIMIT.toFixed(2)} USDC`);
 
-    const result = await payAndCallAgent(command, input, userId);
+    const agentDef = AGENTS[command];
+    const origBuild = agentDef.buildPayload;
+    const result = await payAndCallAgentWithPayload(command, origBuild(resolvedInput), userId, resolvedLang);
     const formatted = formatResult(result, agent.name, agent.price);
     ctx.reply(formatted);
   });
 });
+
+async function payAndCallAgentWithPayload(agentKey: string, payload: Record<string, unknown>, userId: number, overrideLang?: string) {
+  const agent = AGENTS[agentKey];
+  if (!agent) return { error: "Unknown agent" };
+  const priceNum = parseFloat(agent.price);
+  if (!checkUserLimit(userId)) return { error: `Daily limit reached (${DAILY_LIMIT} USDC).` };
+
+  if (overrideLang) payload.language = overrideLang;
+
+  try {
+    const probe = await axios.post(`${VAXA_API_URL}${agent.endpoint}`, payload, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 15000,
+      validateStatus: () => true,
+    });
+
+    if (probe.status !== 402) {
+      if (probe.status >= 400) return { error: probe.data?.error || `HTTP ${probe.status}` };
+      recordSpend(userId, priceNum);
+      return probe.data;
+    }
+
+    const paymentReq = probe.data?.["x-payment-required"];
+    if (!paymentReq) return { error: "Payment required but no details returned" };
+
+    const txHash = await payWithBotWallet(paymentReq.amount, paymentReq.recipient);
+    if (!txHash) return { error: "Bot wallet payment failed." };
+
+    const retryRes = await axios.post(`${VAXA_API_URL}${agent.endpoint}`, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Payment-Proof": JSON.stringify({
+          txHash,
+          recipient: paymentReq.recipient,
+          amount: paymentReq.amount,
+          tokenAddress: paymentReq.tokenAddress,
+        }),
+      },
+      timeout: 30000,
+    });
+
+    recordSpend(userId, priceNum);
+    return retryRes.data;
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { error?: string } }; message?: string };
+    return { error: err.response?.data?.error || err.message || "Agent call failed" };
+  }
+}
 
 // ============== ESCROW ==============
 bot.command("escrow", async (ctx) => {
