@@ -85,8 +85,16 @@ Setelah connect GitHub repo:
 
 | Key | Value |
 |-----|-------|
-| `TELEGRAM_BOT_TOKEN` | Token dari Step 1 |
-| `GITHUB_TOKEN` | Token dari Step 2 |
+| `TELEGRAM_BOT_TOKEN` | Token dari @BotFather |
+| `GITHUB_TOKEN` | Token dari github.com/settings/tokens |
+| `VAXA_API_URL` | `https://scbc-hacks.vercel.app` |
+| `DAILY_SPEND_LIMIT` | `5.00` (max USDC per user/hari) |
+
+**Opsional - Bot Wallet (untuk payment):**
+| Key | Value |
+|-----|-------|
+| `BOT_USDC_PRIVATE_KEY` | Private key dengan USDC (Fuji) |
+| `USDC_CONTRACT_ADDRESS` | `0x5425890C6C9Fc8561a8b4E763b7E6e43b7e9A5F4` |
 | `VAXA_API_URL` | `https://scbc-hacks.vercel.app` |
 
 3. Klik **"+ Add"** untuk setiap variabel
