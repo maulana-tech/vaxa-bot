@@ -539,10 +539,13 @@ bot.command("connect", (ctx) => {
 
   ctx.reply(
     `Verify wallet ownership:\n\n` +
-    `1. Open your wallet (MetaMask, Rabby, etc.)\n` +
-    `2. Sign this message:\n\n` +
+    `1. Copy this message:\n\n` +
     `\`\`\`\n${buildVerificationMessage(address, nonce, ctx.from.id)}\n\`\`\`\n\n` +
-    `3. Send the signature here:\n/verify <signature>\n\n` +
+    `2. Go to ${VAXA_API_URL}/verify\n` +
+    `   - Paste the message\n` +
+    `   - Connect wallet & sign\n` +
+    `   - Copy the signature\n\n` +
+    `3. Send: /verify <signature>\n\n` +
     `Expires in 10 minutes.`,
     { parse_mode: "Markdown" }
   );
