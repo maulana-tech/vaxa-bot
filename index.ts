@@ -944,15 +944,16 @@ async function payAndCallAgentWithPayload(agentKey: string, payload: Record<stri
 // ============== SHARED USER/WALLET (Vercel API) ==============
 async function saveWalletToAPI(userId: number, walletAddress: string) {
   try {
-    await axios.post(`${VAXA_API_URL}/api/users`, {
+    const res = await axios.post(`${VAXA_API_URL}/api/users`, {
       telegramId: userId,
       walletAddress: walletAddress,
     }, {
       headers: { "x-bot-key": BOT_API_KEY, "Content-Type": "application/json" },
       timeout: 5000,
     });
+    console.log(`Saved wallet to API for user ${userId}: ${walletAddress.slice(0, 10)}... response: ${res.status}`);
   } catch (e) {
-    console.error("Failed to save wallet to API:", e);
+    console.error("Failed to save wallet to API:", (e as Error).message || e);
   }
 }
 
@@ -979,10 +980,13 @@ async function recordWebTransaction(params: {
   if (!wallet) {
     wallet = await getWalletFromAPI(params.userId) || "";
   }
-  if (!wallet) return;
+  if (!wallet) {
+    console.log(`No wallet for user ${params.userId}, skip recording`);
+    return;
+  }
 
   try {
-    await axios.post(`${VAXA_API_URL}/api/transactions`, {
+    const res = await axios.post(`${VAXA_API_URL}/api/transactions`, {
       source: "telegram",
       agentName: params.agentName,
       agentType: params.agentType,
@@ -996,8 +1000,9 @@ async function recordWebTransaction(params: {
       headers: { "x-bot-key": BOT_API_KEY, "Content-Type": "application/json" },
       timeout: 5000,
     });
+    console.log(`Recorded tx to web API: ${res.data?.id} for wallet ${wallet.slice(0, 10)}...`);
   } catch (e) {
-    console.error("Failed to record web transaction:", e);
+    console.error("Failed to record web transaction:", (e as Error).message || e);
   }
 }
 
