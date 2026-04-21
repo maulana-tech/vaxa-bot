@@ -524,12 +524,13 @@ bot.command("wallet", async (ctx) => {
 });
 
 bot.command("connect", (ctx) => {
-  const address = ctx.message.text.slice(8).trim();
-  if (!address || !address.startsWith("0x") || address.length !== 42) {
-    ctx.reply("Usage: /connect 0xYourWalletAddress\n\nLink your wallet by verifying ownership.");
+  const input = ctx.message.text.slice(8).trim();
+  if (input && (input.startsWith("0x") && input.length !== 42)) {
+    ctx.reply("Invalid address. Usage: /connect OR /connect 0xYourWalletAddress");
     return;
   }
 
+  const address = input || "";
   const nonce = generateNonce();
   pendingVerification[ctx.from.id] = {
     address: address,
@@ -540,8 +541,9 @@ bot.command("connect", (ctx) => {
   ctx.reply(
     `Verify wallet ownership:\n\n` +
     `Open this link and sign with your wallet:\n\n` +
-    `${VAXA_API_URL}/verify?address=${address}&tid=${ctx.from.id}&nonce=${nonce}\n\n` +
-    `Then send: /verify <signature>\n\n` +
+    `${VAXA_API_URL}/verify?tid=${ctx.from.id}&nonce=${nonce}` +
+    (address ? `&address=${address}` : "") +
+    `\n\nThen send: /verify <signature>\n\n` +
     `Expires in 10 minutes.`
   );
 });
@@ -551,13 +553,13 @@ bot.command("verify", (ctx) => {
   const pending = pendingVerification[ctx.from.id];
 
   if (!pending) {
-    ctx.reply("No pending verification. Use /connect <address> first.");
+    ctx.reply("No pending verification. Use /connect first.");
     return;
   }
 
   if (Date.now() > pending.expires) {
     delete pendingVerification[ctx.from.id];
-    ctx.reply("Verification expired. Use /connect <address> again.");
+    ctx.reply("Verification expired. Use /connect again.");
     return;
   }
 
@@ -566,23 +568,37 @@ bot.command("verify", (ctx) => {
     return;
   }
 
-  const valid = verifySignature(pending.address, pending.nonce, ctx.from.id, signature);
+  const address = pending.address || "";
+  const message = buildVerificationMessage(address, pending.nonce, ctx.from.id);
 
-  if (valid) {
+  try {
+    const recovered = ethers.verifyMessage(message, signature);
+    const linkedAddress = address || recovered;
+
+    if (address && recovered.toLowerCase() !== address.toLowerCase()) {
+      ctx.reply(
+        `Wallet mismatch!\n\n` +
+        `You signed with: ${recovered}\n` +
+        `Expected: ${address}\n\n` +
+        `Make sure your browser wallet is set to the correct account, then try /connect again.`
+      );
+      return;
+    }
+
     const user = getUser(ctx.from.id);
-    user.walletAddress = pending.address;
+    user.walletAddress = linkedAddress.toLowerCase();
     user.verified = true;
     saveUser(ctx.from.id);
     delete pendingVerification[ctx.from.id];
 
     ctx.reply(
       `Wallet verified and linked!\n\n` +
-      `Address: ${pending.address}\n` +
+      `Address: ${linkedAddress}\n` +
       `Status: Verified\n\n` +
-      `Explorer: https://testnet.snowtrace.io/address/${pending.address}`
+      `Explorer: https://testnet.snowtrace.io/address/${linkedAddress}`
     );
-  } else {
-    ctx.reply("Signature verification failed. Make sure you signed the exact message from /connect. Try again with /connect <address>.");
+  } catch {
+    ctx.reply("Invalid signature format. Try /connect again.");
   }
 });
 
