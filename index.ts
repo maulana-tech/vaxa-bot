@@ -532,7 +532,7 @@ bot.command("connect", (ctx) => {
 
   const nonce = generateNonce();
   pendingVerification[ctx.from.id] = {
-    address: address.toLowerCase(),
+    address: address,
     nonce,
     expires: Date.now() + 10 * 60 * 1000,
   };
