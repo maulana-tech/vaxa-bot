@@ -639,13 +639,18 @@ bot.command("stop", (ctx) => {
   );
 });
 
-bot.action("stop_confirm", (ctx) => {
+bot.action("stop_confirm", async (ctx) => {
   ctx.answerCbQuery();
   const user = getUser(ctx.from.id);
   const oldAddress = user.walletAddress;
   user.walletAddress = undefined;
   user.verified = false;
   saveUser(ctx.from.id);
+
+  if (oldAddress) {
+    await saveWalletToAPI(ctx.from.id, "");
+  }
+
   ctx.editMessageText(
     `Wallet unlinked.\n\n` +
     `Removed: ${oldAddress || "N/A"}\n\n` +
@@ -776,6 +781,8 @@ bot.command("verify", (ctx) => {
     user.verified = true;
     saveUser(ctx.from.id);
     delete pendingVerification[ctx.from.id];
+
+    saveWalletToAPI(ctx.from.id, linkedAddress);
 
     ctx.reply(
       `Wallet verified and linked!\n\n` +
@@ -935,6 +942,30 @@ async function payAndCallAgentWithPayload(agentKey: string, payload: Record<stri
   }
 }
 
+// ============== SHARED USER/WALLET (Vercel API) ==============
+async function saveWalletToAPI(userId: number, walletAddress: string) {
+  try {
+    await axios.post(`${VAXA_API_URL}/api/users`, {
+      telegramId: userId,
+      walletAddress: walletAddress,
+    }, {
+      headers: { "x-bot-key": BOT_API_KEY, "Content-Type": "application/json" },
+      timeout: 5000,
+    });
+  } catch (e) {
+    console.error("Failed to save wallet to API:", e);
+  }
+}
+
+async function getWalletFromAPI(userId: number): Promise<string | null> {
+  try {
+    const res = await axios.get(`${VAXA_API_URL}/api/users?tid=${userId}`, { timeout: 5000 });
+    return res.data?.user?.walletAddress || null;
+  } catch {
+    return null;
+  }
+}
+
 // ============== SHARED TRANSACTION LOGGING ==============
 async function recordWebTransaction(params: {
   userId: number;
@@ -945,8 +976,11 @@ async function recordWebTransaction(params: {
   status: string;
   result?: string;
 }) {
-  const user = getUser(params.userId);
-  if (!user.walletAddress) return;
+  let wallet = getUser(params.userId).walletAddress;
+  if (!wallet) {
+    wallet = await getWalletFromAPI(params.userId) || "";
+  }
+  if (!wallet) return;
 
   try {
     await axios.post(`${VAXA_API_URL}/api/transactions`, {
@@ -956,7 +990,7 @@ async function recordWebTransaction(params: {
       amount: params.amount,
       txHash: params.txHash,
       status: params.status,
-      userWalletAddress: user.walletAddress,
+      userWalletAddress: wallet,
       result: params.result,
       createdAt: new Date().toISOString(),
     }, {
