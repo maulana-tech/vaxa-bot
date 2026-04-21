@@ -6,6 +6,7 @@ import { join } from "path";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const VAXA_API_URL = process.env.VAXA_API_URL || "https://scbc-hacks.vercel.app";
+const BOT_API_KEY = process.env.BOT_API_KEY || "vaxa-bot-internal";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const BOT_PRIVATE_KEY = process.env.BOT_USDC_PRIVATE_KEY;
 const USDC_ADDRESS = process.env.USDC_CONTRACT_ADDRESS || "0x48FE28F7893De0d20b31FBAbcA1fDbE318fA339e";
@@ -871,6 +872,18 @@ Object.entries(AGENTS).forEach(([command, agent]) => {
     const result = await payAndCallAgentWithPayload(command, origBuild(resolvedInput), userId, resolvedLang);
     const formatted = formatResult(result, agent.name, agent.price);
     ctx.reply(formatted);
+
+    if (!result.error) {
+      recordWebTransaction({
+        userId,
+        agentName: agent.name,
+        agentType: command,
+        amount: agent.price,
+        txHash: result.txHash || "",
+        status: "success",
+        result: formatted.slice(0, 500),
+      });
+    }
   });
 });
 
@@ -919,6 +932,39 @@ async function payAndCallAgentWithPayload(agentKey: string, payload: Record<stri
   } catch (error: unknown) {
     const err = error as { response?: { data?: { error?: string } }; message?: string };
     return { error: err.response?.data?.error || err.message || "Agent call failed" };
+  }
+}
+
+// ============== SHARED TRANSACTION LOGGING ==============
+async function recordWebTransaction(params: {
+  userId: number;
+  agentName: string;
+  agentType: string;
+  amount: string;
+  txHash: string;
+  status: string;
+  result?: string;
+}) {
+  const user = getUser(params.userId);
+  if (!user.walletAddress) return;
+
+  try {
+    await axios.post(`${VAXA_API_URL}/api/transactions`, {
+      source: "telegram",
+      agentName: params.agentName,
+      agentType: params.agentType,
+      amount: params.amount,
+      txHash: params.txHash,
+      status: params.status,
+      userWalletAddress: user.walletAddress,
+      result: params.result,
+      createdAt: new Date().toISOString(),
+    }, {
+      headers: { "x-bot-key": BOT_API_KEY, "Content-Type": "application/json" },
+      timeout: 5000,
+    });
+  } catch (e) {
+    console.error("Failed to record web transaction:", e);
   }
 }
 
