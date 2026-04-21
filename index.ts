@@ -808,12 +808,27 @@ bot.command("escrow-reject", async (ctx) => {
 });
 
 // ============== LAUNCH ==============
-bot.launch().then(() => {
-  console.log("Vaxa Bot started!");
-  console.log(`API: ${VAXA_API_URL}`);
-  console.log(`Daily limit: ${DAILY_LIMIT} USDC/user`);
-  console.log(`Bot wallet: ${BOT_PRIVATE_KEY ? "configured" : "not set (free mode)"}`);
-});
+import http from "http";
+
+const PORT = parseInt(process.env.PORT || "8080", 10);
+const WEBHOOK_PATH = "/webhook";
+const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
+
+if (WEBHOOK_DOMAIN) {
+  const url = WEBHOOK_DOMAIN.replace(/\/$/, "") + WEBHOOK_PATH;
+  bot.telegram.setWebhook(url);
+  bot.startWebhook(WEBHOOK_PATH, null, PORT);
+  console.log(`Bot started (webhook) on port ${PORT}`);
+  console.log(`Webhook: ${url}`);
+} else {
+  const server = http.createServer((_, res) => { res.writeHead(200); res.end("ok"); });
+  server.listen(PORT, () => console.log(`Health check on port ${PORT}`));
+  bot.launch().then(() => console.log("Bot started (polling)"));
+}
+
+console.log(`API: ${VAXA_API_URL}`);
+console.log(`Daily limit: ${DAILY_LIMIT} USDC/user`);
+console.log(`Bot wallet: ${BOT_PRIVATE_KEY ? "configured" : "not set (free mode)"}`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
