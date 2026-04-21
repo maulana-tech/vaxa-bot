@@ -1,7 +1,7 @@
 import { Telegraf, Markup } from "telegraf";
 import axios from "axios";
 import { ethers } from "ethers";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -49,7 +49,6 @@ function saveUsers(users: Record<number, UserData>) {
   try {
     const dir = join(process.cwd(), "data");
     if (!existsSync(dir)) {
-      const { mkdirSync } = require("fs");
       mkdirSync(dir, { recursive: true });
     }
     writeFileSync(DATA_FILE, JSON.stringify(users, null, 2));
