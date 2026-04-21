@@ -1,6 +1,8 @@
 import { Telegraf } from "telegraf";
 import axios from "axios";
 import { ethers } from "ethers";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join } from "path";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const VAXA_API_URL = process.env.VAXA_API_URL || "https://scbc-hacks.vercel.app";
@@ -21,6 +23,75 @@ const githubHeaders = {
   "X-GitHub-Api-Version": "2022-11-28",
 };
 
+// ============== PERSISTENT STORAGE ==============
+const DATA_FILE = join(process.cwd(), "data", "users.json");
+
+interface UserData {
+  walletAddress?: string;
+  verified: boolean;
+  dailySpent: number;
+  lastReset: number;
+}
+
+function loadUsers(): Record<number, UserData> {
+  try {
+    if (existsSync(DATA_FILE)) {
+      return JSON.parse(readFileSync(DATA_FILE, "utf-8"));
+    }
+  } catch (e) {
+    console.error("Failed to load user data:", e);
+  }
+  return {};
+}
+
+function saveUsers(users: Record<number, UserData>) {
+  try {
+    const dir = join(process.cwd(), "data");
+    if (!existsSync(dir)) {
+      const { mkdirSync } = require("fs");
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(DATA_FILE, JSON.stringify(users, null, 2));
+  } catch (e) {
+    console.error("Failed to save user data:", e);
+  }
+}
+
+let users: Record<number, UserData> = loadUsers();
+
+function getUser(userId: number): UserData {
+  if (!users[userId]) {
+    users[userId] = { verified: false, dailySpent: 0, lastReset: Date.now() };
+  }
+  return users[userId];
+}
+
+function saveUser(userId: number) {
+  getUser(userId);
+  saveUsers(users);
+}
+
+// ============== WALLET VERIFICATION ==============
+const pendingVerification: Record<number, { address: string; nonce: string; expires: number }> = {};
+
+function generateNonce(): string {
+  return `vaxa-verify-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildVerificationMessage(address: string, nonce: string, telegramId: number): string {
+  return `Sign this message to verify you own this wallet for Vaxa Telegram Bot.\n\nWallet: ${address}\nTelegram ID: ${telegramId}\nNonce: ${nonce}\n\nThis signature is valid for 10 minutes.`;
+}
+
+function verifySignature(address: string, nonce: string, telegramId: number, signature: string): boolean {
+  try {
+    const message = buildVerificationMessage(address, nonce, telegramId);
+    const recovered = ethers.verifyMessage(message, signature);
+    return recovered.toLowerCase() === address.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 // ============== PROVIDER ==============
 const provider = new ethers.JsonRpcProvider("https://api.avax-test.network/ext/bc/C/rpc");
 
@@ -31,27 +102,32 @@ function getBotWallet(): ethers.Wallet | null {
 
 // ============== PAYMENT STATE ==============
 const userSpent: Record<number, { daily: number; lastReset: number }> = {};
-const userWallets: Record<number, string> = {};
 
 function checkUserLimit(userId: number): boolean {
   const now = Date.now();
-  if (!userSpent[userId] || now - userSpent[userId].lastReset > 86400000) {
-    userSpent[userId] = { daily: 0, lastReset: now };
+  const user = getUser(userId);
+  if (now - user.lastReset > 86400000) {
+    user.dailySpent = 0;
+    user.lastReset = now;
+    saveUser(userId);
   }
-  return userSpent[userId].daily < DAILY_LIMIT;
+  return user.dailySpent < DAILY_LIMIT;
 }
 
 function recordSpend(userId: number, amount: number) {
-  if (!userSpent[userId]) {
-    userSpent[userId] = { daily: 0, lastReset: Date.now() };
+  const user = getUser(userId);
+  if (Date.now() - user.lastReset > 86400000) {
+    user.dailySpent = 0;
+    user.lastReset = Date.now();
   }
-  userSpent[userId].daily += amount;
+  user.dailySpent += amount;
+  saveUser(userId);
 }
 
 function getSpentToday(userId: number): number {
-  const now = Date.now();
-  if (!userSpent[userId] || now - userSpent[userId].lastReset > 86400000) return 0;
-  return userSpent[userId].daily;
+  const user = getUser(userId);
+  if (Date.now() - user.lastReset > 86400000) return 0;
+  return user.dailySpent;
 }
 
 // ============== BOT WALLET PAYMENT ==============
@@ -392,7 +468,8 @@ bot.start((ctx) => {
     `/github issue|pr|repo|commits ...\n\n` +
     `Wallet:\n` +
     `/wallet - Bot wallet info\n` +
-    `/connect <address> - Link your wallet\n` +
+    `/connect <address> - Verify & link wallet\n` +
+    `/verify <signature> - Complete verification\n` +
     `/balance - Your spending\n\n` +
     `Spent today: ${spent.toFixed(2)} / ${DAILY_LIMIT.toFixed(2)} USDC\n\n` +
     `/help - Full help`
@@ -417,7 +494,8 @@ bot.help((ctx) => {
     `/github commits <repo>\n\n` +
     `Wallet:\n` +
     `/wallet - Bot wallet balance\n` +
-    `/connect <address> - Link your wallet\n` +
+    `/connect <address> - Verify & link wallet\n` +
+    `/verify <signature> - Complete verification\n` +
     `/balance - Your spending stats`
   );
 });
@@ -448,22 +526,78 @@ bot.command("wallet", async (ctx) => {
 bot.command("connect", (ctx) => {
   const address = ctx.message.text.slice(8).trim();
   if (!address || !address.startsWith("0x") || address.length !== 42) {
-    ctx.reply("Usage: /connect 0xYourWalletAddress\n\nLink your wallet to track spending on-chain.");
+    ctx.reply("Usage: /connect 0xYourWalletAddress\n\nLink your wallet by verifying ownership.");
     return;
   }
-  userWallets[ctx.from.id] = address;
-  ctx.reply(`Wallet linked: ${address}\n\nView on explorer:\nhttps://testnet.snowtrace.io/address/${address}`);
+
+  const nonce = generateNonce();
+  pendingVerification[ctx.from.id] = {
+    address: address.toLowerCase(),
+    nonce,
+    expires: Date.now() + 10 * 60 * 1000,
+  };
+
+  ctx.reply(
+    `Verify wallet ownership:\n\n` +
+    `1. Open your wallet (MetaMask, Rabby, etc.)\n` +
+    `2. Sign this message:\n\n` +
+    `\`\`\`\n${buildVerificationMessage(address, nonce, ctx.from.id)}\n\`\`\`\n\n` +
+    `3. Send the signature here:\n/verify <signature>\n\n` +
+    `Expires in 10 minutes.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+bot.command("verify", (ctx) => {
+  const signature = ctx.message.text.slice(7).trim();
+  const pending = pendingVerification[ctx.from.id];
+
+  if (!pending) {
+    ctx.reply("No pending verification. Use /connect <address> first.");
+    return;
+  }
+
+  if (Date.now() > pending.expires) {
+    delete pendingVerification[ctx.from.id];
+    ctx.reply("Verification expired. Use /connect <address> again.");
+    return;
+  }
+
+  if (!signature) {
+    ctx.reply("Usage: /verify <signature>\n\nPaste the signature from your wallet.");
+    return;
+  }
+
+  const valid = verifySignature(pending.address, pending.nonce, ctx.from.id, signature);
+
+  if (valid) {
+    const user = getUser(ctx.from.id);
+    user.walletAddress = pending.address;
+    user.verified = true;
+    saveUser(ctx.from.id);
+    delete pendingVerification[ctx.from.id];
+
+    ctx.reply(
+      `Wallet verified and linked!\n\n` +
+      `Address: ${pending.address}\n` +
+      `Status: Verified\n\n` +
+      `Explorer: https://testnet.snowtrace.io/address/${pending.address}`
+    );
+  } else {
+    ctx.reply("Signature verification failed. Make sure you signed the exact message from /connect. Try again with /connect <address>.");
+  }
 });
 
 bot.command("balance", (ctx) => {
   const userId = ctx.from.id;
   const spent = getSpentToday(userId);
-  const wallet = userWallets[userId];
+  const user = getUser(userId);
   ctx.reply(
     `Your Stats:\n\n` +
     `Spent today: ${spent.toFixed(2)} / ${DAILY_LIMIT.toFixed(2)} USDC\n` +
     `Remaining: ${(DAILY_LIMIT - spent).toFixed(2)} USDC\n` +
-    `Linked wallet: ${wallet || "not linked (use /connect)"}`
+    `Wallet: ${user.walletAddress || "not linked"}\n` +
+    `Verified: ${user.verified ? "yes" : "no"}`
   );
 });
 
