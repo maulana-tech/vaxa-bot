@@ -539,15 +539,10 @@ bot.command("connect", (ctx) => {
 
   ctx.reply(
     `Verify wallet ownership:\n\n` +
-    `1. Copy this message:\n\n` +
-    `\`\`\`\n${buildVerificationMessage(address, nonce, ctx.from.id)}\n\`\`\`\n\n` +
-    `2. Go to ${VAXA_API_URL}/verify\n` +
-    `   - Paste the message\n` +
-    `   - Connect wallet & sign\n` +
-    `   - Copy the signature\n\n` +
-    `3. Send: /verify <signature>\n\n` +
-    `Expires in 10 minutes.`,
-    { parse_mode: "Markdown" }
+    `Open this link and sign with your wallet:\n\n` +
+    `${VAXA_API_URL}/verify?address=${address}&tid=${ctx.from.id}&nonce=${nonce}\n\n` +
+    `Then send: /verify <signature>\n\n` +
+    `Expires in 10 minutes.`
   );
 });
 
