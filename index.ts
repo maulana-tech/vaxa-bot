@@ -1,4 +1,4 @@
-import { Telegraf } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
 import axios from "axios";
 import { ethers } from "ethers";
 import { readFileSync, writeFileSync, existsSync } from "fs";
@@ -454,49 +454,234 @@ function formatResult(result: unknown, agentName: string, price: string): string
 // ============== COMMANDS ==============
 bot.start((ctx) => {
   const userId = ctx.from.id;
+  const user = getUser(userId);
   const spent = getSpentToday(userId);
+
   ctx.reply(
     `Vaxa Bot - AI Agent Marketplace\n\n` +
-    `AI Agents (bot pays!):\n` +
-    `/code <code> - Code review (0.05 USDC)\n` +
-    `/summarize <text> - Summarize (0.02 USDC)\n` +
-    `/translate <text> | <lang> - Translate (0.03 USDC)\n` +
-    `/sql <desc> - SQL gen (0.04 USDC)\n` +
-    `/regex <desc> - Regex gen (0.03 USDC)\n` +
-    `/explain <code> - Explain (0.02 USDC)\n\n` +
-    `GitHub (free):\n` +
-    `/github issue|pr|repo|commits ...\n\n` +
-    `Wallet:\n` +
-    `/wallet - Bot wallet info\n` +
-    `/connect <address> - Verify & link wallet\n` +
-    `/verify <signature> - Complete verification\n` +
-    `/balance - Your spending\n\n` +
+    `Wallet: ${user.walletAddress || "not linked"}\n` +
     `Spent today: ${spent.toFixed(2)} / ${DAILY_LIMIT.toFixed(2)} USDC\n\n` +
-    `/help - Full help`
+    `Use /menu to interact, /help for full commands.`,
+    Markup.inlineKeyboard([
+      [Markup.button.url("Open Dashboard", `${VAXA_API_URL}/dashboard`)],
+      [Markup.button.url("Open Marketplace", `${VAXA_API_URL}/marketplace`)],
+    ])
   );
+});
+
+bot.command("menu", (ctx) => {
+  const user = getUser(ctx.from.id);
+  const spent = getSpentToday(ctx.from.id);
+
+  ctx.reply(
+    `Vaxa Menu\n\n` +
+    `Wallet: ${user.walletAddress ? user.walletAddress.slice(0, 6) + "..." + user.walletAddress.slice(-4) : "not linked"}\n` +
+    `Spent: ${spent.toFixed(2)} / ${DAILY_LIMIT.toFixed(2)} USDC`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("AI Agents", "menu_agents"),
+        Markup.button.callback("GitHub", "menu_github"),
+      ],
+      [
+        Markup.button.callback("Wallet", "menu_wallet"),
+        Markup.button.callback("Escrow", "menu_escrow"),
+      ],
+      [
+        Markup.button.url("Dashboard", `${VAXA_API_URL}/dashboard`),
+        Markup.button.url("Marketplace", `${VAXA_API_URL}/marketplace`),
+      ],
+    ])
+  );
+});
+
+bot.action("menu_agents", (ctx) => {
+  ctx.answerCbQuery();
+  ctx.reply(
+    `AI Agents (bot pays!):\n\n` +
+    `/code <code> - Code review (0.05 USDC)\n/code repo owner/repo path\n/code pr owner/repo #\n\n` +
+    `/summarize <text> - Summarize (0.02 USDC)\n/translate <text> | <lang> - Translate (0.03 USDC)\n` +
+    `/sql <desc> - SQL gen (0.04 USDC)\n/regex <desc> - Regex gen (0.03 USDC)\n` +
+    `/explain <code> - Explain (0.02 USDC)\n\n` +
+    `Daily limit: ${DAILY_LIMIT} USDC`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("Back", "menu_back")],
+    ])
+  );
+});
+
+bot.action("menu_github", (ctx) => {
+  ctx.answerCbQuery();
+  ctx.reply(
+    `GitHub Integration (free):\n\n` +
+    `/github issue create <repo> <title> <body>\n/github issue list <repo>\n` +
+    `/github pr list <repo>\n/github repo <owner/repo>\n/github commits <repo>`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("Back", "menu_back")],
+    ])
+  );
+});
+
+bot.action("menu_wallet", (ctx) => {
+  ctx.answerCbQuery();
+  const user = getUser(ctx.from.id);
+  const spent = getSpentToday(ctx.from.id);
+
+  const buttons: ReturnType<typeof Markup.inlineKeyboard> extends infer T ? T : never = Markup.inlineKeyboard([
+    [
+      Markup.button.callback("Connect Wallet", "wallet_connect"),
+      Markup.button.callback("Balance", "wallet_balance"),
+    ],
+    [Markup.button.callback("Back", "menu_back")],
+  ]);
+
+  ctx.reply(
+    `Wallet:\n\n` +
+    `Address: ${user.walletAddress || "not linked"}\n` +
+    `Verified: ${user.verified ? "yes" : "no"}\n` +
+    `Spent today: ${spent.toFixed(2)} / ${DAILY_LIMIT.toFixed(2)} USDC\n` +
+    `Remaining: ${(DAILY_LIMIT - spent).toFixed(2)} USDC`,
+    buttons
+  );
+});
+
+bot.action("wallet_connect", (ctx) => {
+  ctx.answerCbQuery();
+  const nonce = generateNonce();
+  pendingVerification[ctx.from.id] = {
+    address: "",
+    nonce,
+    expires: Date.now() + 10 * 60 * 1000,
+  };
+  ctx.reply(
+    `Verify wallet ownership:\n\n` +
+    `Open this link and sign with your wallet:\n\n` +
+    `${VAXA_API_URL}/verify?tid=${ctx.from.id}&nonce=${nonce}\n\n` +
+    `Then send: /verify <signature>\n\n` +
+    `Expires in 10 minutes.`
+  );
+});
+
+bot.action("wallet_balance", async (ctx) => {
+  ctx.answerCbQuery();
+  try {
+    const bal = await getBotBalance();
+    ctx.reply(
+      `Bot Wallet:\n\n` +
+      `Address: ${bal.address}\n` +
+      `AVAX: ${bal.avax}\n` +
+      `USDC: ${bal.usdc}\n\n` +
+      `Network: Avalanche Fuji (43113)\n` +
+      `Explorer: https://testnet.snowtrace.io/address/${bal.address}`
+    );
+  } catch {
+    ctx.reply("Could not fetch wallet balance.");
+  }
+});
+
+bot.action("menu_escrow", (ctx) => {
+  ctx.answerCbQuery();
+  ctx.reply(
+    `Smart Escrow:\n\n` +
+    `/escrow <agent> <task> - Create escrow\n` +
+    `/escrow-execute <id> - Execute task\n` +
+    `/escrow-approve <id> - Release funds\n` +
+    `/escrow-reject <id> - Refund\n\n` +
+    `Agents: code, summarize, translate, sql, regex, explain`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("Back", "menu_back")],
+    ])
+  );
+});
+
+bot.action("menu_back", (ctx) => {
+  ctx.answerCbQuery();
+  const user = getUser(ctx.from.id);
+  const spent = getSpentToday(ctx.from.id);
+  ctx.editMessageText(
+    `Vaxa Menu\n\n` +
+    `Wallet: ${user.walletAddress ? user.walletAddress.slice(0, 6) + "..." + user.walletAddress.slice(-4) : "not linked"}\n` +
+    `Spent: ${spent.toFixed(2)} / ${DAILY_LIMIT.toFixed(2)} USDC`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("AI Agents", "menu_agents"),
+        Markup.button.callback("GitHub", "menu_github"),
+      ],
+      [
+        Markup.button.callback("Wallet", "menu_wallet"),
+        Markup.button.callback("Escrow", "menu_escrow"),
+      ],
+      [
+        Markup.button.url("Dashboard", `${VAXA_API_URL}/dashboard`),
+        Markup.button.url("Marketplace", `${VAXA_API_URL}/marketplace`),
+      ],
+    ])
+  );
+});
+
+bot.command("stop", (ctx) => {
+  const user = getUser(ctx.from.id);
+  if (!user.walletAddress) {
+    ctx.reply("No wallet linked. Nothing to stop.");
+    return;
+  }
+
+  ctx.reply(
+    `Are you sure you want to unlink your wallet?\n\n` +
+    `Wallet: ${user.walletAddress}\n\n` +
+    `This will remove your linked wallet and verification status.`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback("Yes, Unlink", "stop_confirm"),
+        Markup.button.callback("Cancel", "stop_cancel"),
+      ],
+    ])
+  );
+});
+
+bot.action("stop_confirm", (ctx) => {
+  ctx.answerCbQuery();
+  const user = getUser(ctx.from.id);
+  const oldAddress = user.walletAddress;
+  user.walletAddress = undefined;
+  user.verified = false;
+  saveUser(ctx.from.id);
+  ctx.editMessageText(
+    `Wallet unlinked.\n\n` +
+    `Removed: ${oldAddress || "N/A"}\n\n` +
+    `Use /connect to link a new wallet.`
+  );
+});
+
+bot.action("stop_cancel", (ctx) => {
+  ctx.answerCbQuery();
+  ctx.editMessageText("Cancelled. Wallet still linked.");
 });
 
 bot.help((ctx) => {
   ctx.reply(
     `Commands:\n\n` +
+    `General:\n` +
+    `/menu - Interactive menu\n` +
+    `/start - Welcome + links\n` +
+    `/stop - Unlink wallet\n\n` +
     `AI Agents:\n` +
     `/code <code> - Review code\n` +
     `/summarize <text> - Summarize\n` +
-    `/translate <text> | <lang> - Translate (default: id)\n` +
+    `/translate <text> | <lang> - Translate\n` +
     `/sql <desc> - Generate SQL\n` +
     `/regex <desc> - Generate regex\n` +
     `/explain <code> - Explain code\n\n` +
     `GitHub:\n` +
-    `/github issue create <repo> <title> <body>\n` +
-    `/github issue list <repo>\n` +
-    `/github pr list <repo>\n` +
-    `/github repo <owner/repo>\n` +
-    `/github commits <repo>\n\n` +
+    `/github issue|pr|repo|commits ...\n\n` +
     `Wallet:\n` +
     `/wallet - Bot wallet balance\n` +
-    `/connect <address> - Verify & link wallet\n` +
-    `/verify <signature> - Complete verification\n` +
-    `/balance - Your spending stats`
+    `/connect - Verify & link wallet\n` +
+    `/verify <sig> - Complete verification\n` +
+    `/balance - Your spending stats\n\n` +
+    `Web:\n` +
+    `Dashboard: ${VAXA_API_URL}/dashboard\n` +
+    `Marketplace: ${VAXA_API_URL}/marketplace\n` +
+    `Verify: ${VAXA_API_URL}/verify`
   );
 });
 
@@ -822,7 +1007,7 @@ bot.command("escrow-reject", async (ctx) => {
 });
 
 // ============== LAUNCH ==============
-import http from "http";
+import * as http from "http";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const WEBHOOK_PATH = "/webhook";
@@ -831,9 +1016,11 @@ const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 if (WEBHOOK_DOMAIN) {
   const url = WEBHOOK_DOMAIN.replace(/\/$/, "") + WEBHOOK_PATH;
   bot.telegram.setWebhook(url);
-  bot.startWebhook(WEBHOOK_PATH, null, PORT);
-  console.log(`Bot started (webhook) on port ${PORT}`);
-  console.log(`Webhook: ${url}`);
+  const server = http.createServer(bot.webhookCallback(WEBHOOK_PATH));
+  server.listen(PORT, () => {
+    console.log(`Bot started (webhook) on port ${PORT}`);
+    console.log(`Webhook: ${url}`);
+  });
 } else {
   const server = http.createServer((_, res) => { res.writeHead(200); res.end("ok"); });
   server.listen(PORT, () => console.log(`Health check on port ${PORT}`));
